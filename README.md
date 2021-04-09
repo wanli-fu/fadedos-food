@@ -18,3 +18,10 @@
 * reward-service-manager
   * 积分模块
   * exchange采用了topic
+
+# 2. 代码说明
+
+* 各个API使用的rabbit mq原生API
+* handleMessage 消息监听方法 
+  * 使用spring注入,启动项目时自动执行
+  * 使用的异步线程池
