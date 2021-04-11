@@ -133,6 +133,7 @@ public class OrderMessageService {
                     deliverCallback,
                     consumerTag -> {  //消费者标签 暂时为空
                     });
+            log.info("收到其他微服务的消息");
 
             // 该线程不会退出,随时监听队列消息
             while (true) {

@@ -15,6 +15,8 @@ import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.TimeoutException;
 
 @Slf4j
@@ -29,69 +31,89 @@ public class OrderMessageService {
     @Autowired
     private RestaurantDao restaurantDao;
 
+    @Autowired
+    private Channel channel;
+
     @Async
     public void handleMessage() throws IOException, TimeoutException, InterruptedException {
-        // 原生代码 com.rabbitmq.client.ConnectionFactory
-        ConnectionFactory connectionFactory = new ConnectionFactory();
-        connectionFactory.setHost("129.28.198.9");
-        connectionFactory.setPort(5672);
-        connectionFactory.setUsername("wanli");
-        connectionFactory.setPassword("123456");
 
-        try (Connection connection = connectionFactory.newConnection();
-             Channel channel = connection.createChannel()) {
+        // 声明接收死信的exchange
+        channel.exchangeDeclare(
+                "exchange.dlx",
+                BuiltinExchangeType.TOPIC,
+                true,
+                false,
+                null
+        );
 
+        // 声明接收死信消息的队列
+        channel.queueDeclare(
+                "queue.dlx",
+                true,
+                false,
+                false,
+                null
+        );
 
-            // 声明 exchange
-            channel.exchangeDeclare(
-                    "exchange.order.restaurant",
-                    BuiltinExchangeType.DIRECT,
-                    true,
-                    false,
-                    null
-            );
-
-            //声明队列
-            channel.queueDeclare(
-                    "queue.restaurant",
-                    true,
-                    false,
-                    false,
-                    null
-            );
-
-            //绑定
-            channel.queueBind(
-                    "queue.restaurant",
-                    "exchange.order.restaurant",
-                    "key.restaurant"
-            );
+        // 绑定
+        channel.queueBind(
+                "queue.dlx",
+                "exchange.dlx",
+                "#"
+        );
 
 
-            // 监听消息队列 随时接收消息
-            channel.basicConsume(
-                    "queue.restaurant",
-                    true,
-                    deliverCallback,
-                    consumerTag -> {
-                    });
 
-            // 该线程不会退出,随时监听队列消息
-            while (true) {
-                Thread.sleep(10000000);
-            }
+        // 声明 exchange
+        channel.exchangeDeclare(
+                "exchange.order.restaurant",
+                BuiltinExchangeType.DIRECT,
+                true,
+                false,
+                null
+        );
+
+        Map<String, Object> args = new HashMap<>(16);
+        args.put("x-message-ttl", 15000); // 设置队列中所有消息的过期时间15s
+        args.put("x-dead-letter-exchange", "exchange.dlx"); //死信转发的交换机
+        args.put("x-max-length", 10); //队列最大长度是10
+
+        //声明队列
+        channel.queueDeclare(
+                "queue.restaurant",
+                true,
+                false,
+                false,
+                args //加入额外参数 此处队列中所有消息的过期时间
+        );
+
+        //绑定
+        channel.queueBind(
+                "queue.restaurant",
+                "exchange.order.restaurant",
+                "key.restaurant"
+        );
+
+        // 一个消费端最多推送2条未确认的消息,其他消息ready状态,便于横向扩展
+        channel.basicQos(2);
+
+        // 监听消息队列 随时接收消息
+        channel.basicConsume(
+                "queue.restaurant",
+                false,
+                deliverCallback,
+                consumerTag -> {
+                });
+
+        // 该线程不会退出,随时监听队列消息
+        while (true) {
+            Thread.sleep(10000000);
         }
     }
 
     DeliverCallback deliverCallback = ((consumerTag, message) -> {
         String messageBody = new String(message.getBody());
 
-        // 原生代码 com.rabbitmq.client.ConnectionFactory
-        ConnectionFactory connectionFactory = new ConnectionFactory();
-        connectionFactory.setHost("129.28.198.9");
-        connectionFactory.setPort(5672);
-        connectionFactory.setUsername("wanli");
-        connectionFactory.setPassword("123456");
         try {
             OrderMessageDTO orderMessageDTO = objectMapper.readValue(messageBody, OrderMessageDTO.class);
 
@@ -109,17 +131,33 @@ public class OrderMessageService {
             } else {
                 orderMessageDTO.setConfirmed(false);
             }
-            try (Connection connection = connectionFactory.newConnection();
-                 Channel channel = connection.createChannel()) {
-                String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
-                // 给订单微服务 发商家确认订单消息
-                channel.basicPublish(
-                        "exchange.order.restaurant",
-                        "key.order",
-                        null,
-                        messageToSend.getBytes()
-                );
-            }
+
+            channel.addReturnListener(new ReturnCallback() {
+                @Override
+                public void handle(Return returnMessage) {
+                    log.info("Message Return: returnMessage:{}", returnMessage);
+
+                    //除了打印log,可以别的业务操作 业务告警 短信等等处理这个消息
+                }
+            });
+
+            Thread.sleep(3000);
+            //  收到消息 手动ACK 单条
+            // 该channel必须是 接收消息消费时channel
+
+            channel.basicAck(message.getEnvelope().getDeliveryTag(), false);
+
+            String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
+            // 给订单微服务 发商家确认订单消息
+            channel.basicPublish(
+                    "exchange.order.restaurant",
+                    "key.order",
+                    true, // rabbit mq收到消息,若无法路由,则调用发送端的runListener
+                    null,
+                    messageToSend.getBytes()
+            );
+            Thread.sleep(1000);
+
 
         } catch (Exception e) {
             log.error(e.getMessage(), e);
