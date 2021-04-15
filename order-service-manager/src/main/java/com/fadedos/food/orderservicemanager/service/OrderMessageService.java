@@ -94,12 +94,10 @@ public class OrderMessageService {
                             exchange = @Exchange(name = "exchange.order.reward", type = ExchangeTypes.TOPIC),
                             key = "key.order"
                     )
-            } )
+            })
 
     public void handleMessage(@Payload Message message, Channel Channel, @Header(AmqpHeaders.DELIVERY_TAG) long tag) {
         log.info("handleMessage.message:{}", new String(message.getBody()));
-
-        long deliveryTag = message.getMessageProperties().getDeliveryTag();
         try {
             OrderMessageDTO orderMessageDTO = objectMapper.readValue(message.getBody(), OrderMessageDTO.class);
 
@@ -120,7 +118,7 @@ public class OrderMessageService {
                         // 商家返回的消息 通过订单模块发送给骑士微服务
                         String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
                         long deliveryTag1 = message.getMessageProperties().getDeliveryTag();
-                        Channel.basicAck(tag,false);
+                        Channel.basicAck(tag, false);
 
                         rabbitTemplate.convertAndSend(
                                 "exchange.order.deliveryman",
@@ -150,13 +148,13 @@ public class OrderMessageService {
                                 "key.settlement",
                                 messageToSend
                         );
-                        long deliveryTag1 = message.getMessageProperties().getDeliveryTag();
 
-                        Channel.basicAck(tag,false);
+                        Channel.basicAck(tag, false);
                     } else {
                         // 骑手微服务 处理失败,更新订单详情
                         orderDetailPO.setStatus(OrderStatus.FAILED);
                         orderDetailDao.update(orderDetailPO);
+                        Channel.basicAck(tag, false);
                     }
                     break;
                 case DELIVERYMAN_CONFIRMED:
@@ -175,11 +173,12 @@ public class OrderMessageService {
                         );
                         long deliveryTag1 = message.getMessageProperties().getDeliveryTag();
 
-                        Channel.basicAck(tag,false);
+                        Channel.basicAck(tag, false);
                     } else {
                         // 结算失败 导致订单失败
                         orderDetailPO.setStatus(OrderStatus.FAILED);
                         orderDetailDao.update(orderDetailPO);
+                        Channel.basicAck(tag, false);
                     }
                     break;
                 case SETTLEMENT_CONFIRMED:
@@ -193,6 +192,7 @@ public class OrderMessageService {
                         // 积分失败 导致订单失败
                         orderDetailPO.setStatus(OrderStatus.FAILED);
                         orderDetailDao.update(orderDetailPO);
+                        Channel.basicAck(tag, false);
                     }
                     break;
                 case ORDER_CREATED:
@@ -202,9 +202,9 @@ public class OrderMessageService {
                 default:
                     throw new IllegalStateException("Unexpected value: " + orderDetailPO.getStatus());
             }
-        } catch (
-                Exception e) {
+        } catch (Exception e) {
             log.error(e.getMessage(), e);
+
         }
 
     }
