@@ -6,3 +6,21 @@ spring:
     username: root
     password: password
     driver-class-name: com.mysql.cj.jdbc.Driver
+
+  rabbitmq:
+    addresses: 129.28.198.9
+    port: 5672
+    username: wanli
+    password: 123456
+    listener:
+      simple:
+        auto-startup: true
+        acknowledge-mode: manual # 手动签收
+        prefetch: 2 # 消费者队列中存储最大的未消费数量
+        concurrency: 3 # 并发连接数量
+        max-concurrency: 5 #最大并发数
+    template:
+      mandatory: true  # 开启消息返回机制(正确路由)
+    publisher-confirm-type: correlated # 开启消息发送端确认
+    publisher-returns: true # 开启路由失败回调
+

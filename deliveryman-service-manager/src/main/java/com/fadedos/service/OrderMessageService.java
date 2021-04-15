@@ -28,43 +28,37 @@ public class OrderMessageService {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private Channel channel;
+
     @Async
     public void handleMessage() throws IOException, TimeoutException, InterruptedException {
-        log.info("start linstening message");
-        ConnectionFactory connectionFactory = new ConnectionFactory();
-        connectionFactory.setHost("129.28.198.9");
-        connectionFactory.setPort(5672);
-        connectionFactory.setUsername("wanli");
-        connectionFactory.setPassword("123456");
-
-        try (Connection connection = connectionFactory.newConnection();
-             Channel channel = connection.createChannel()) {
-
-            channel.exchangeDeclare(
-                    "exchange.order.deliveryman",
-                    BuiltinExchangeType.DIRECT,
-                    true,
-                    false,
-                    null);
-
-            channel.queueDeclare(
-                    "queue.deliveryman",
-                    true,
-                    false,
-                    false,
-                    null);
-
-            channel.queueBind(
-                    "queue.deliveryman",
-                    "exchange.order.deliveryman",
-                    "key.deliveryman");
 
 
-            channel.basicConsume("queue.deliveryman", true, deliverCallback, consumerTag -> {
-            });
-            while (true) {
-                Thread.sleep(100000);
-            }
+        channel.exchangeDeclare(
+                "exchange.order.deliveryman",
+                BuiltinExchangeType.DIRECT,
+                true,
+                false,
+                null);
+
+        channel.queueDeclare(
+                "queue.deliveryman",
+                true,
+                false,
+                false,
+                null);
+
+        channel.queueBind(
+                "queue.deliveryman",
+                "exchange.order.deliveryman",
+                "key.deliveryman");
+
+
+        channel.basicConsume("queue.deliveryman", false, deliverCallback, consumerTag -> {
+        });
+        while (true) {
+            Thread.sleep(100000);
         }
     }
 
@@ -93,18 +87,17 @@ public class OrderMessageService {
 
             log.info("onMessage:restaurantOrderMessageDTO:{}", orderMessageDTO);
 
-            try (Connection connection = connectionFactory.newConnection();
-                 Channel channel = connection.createChannel()) {
+            channel.basicAck(message.getEnvelope().getDeliveryTag(),false);
 
-                String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
-                // 给订单微服务回复消息, 骑手确认
-                channel.basicPublish(
-                        "exchange.order.deliveryman",
-                        "key.order",
-                        null,
-                        messageToSend.getBytes());
-            }
-        } catch (JsonProcessingException | TimeoutException e) {
+            String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
+            // 给订单微服务回复消息, 骑手确认
+            channel.basicPublish(
+                    "exchange.order.deliveryman",
+                    "key.order",
+                    null,
+                    messageToSend.getBytes());
+
+        } catch (JsonProcessingException e) {
             e.printStackTrace();
         }
     };

@@ -8,7 +8,15 @@ import com.fadedos.food.orderservicemanager.po.OrderDetailPO;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.*;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.core.ExchangeTypes;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.rabbit.annotation.*;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.amqp.support.AmqpHeaders;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.messaging.handler.annotation.Header;
+import org.springframework.messaging.handler.annotation.Headers;
+import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
 
@@ -29,133 +37,71 @@ public class OrderMessageService {
     @Autowired
     private OrderDetailDao orderDetailDao;
 
-    /**
-     * 声明消息队列,交换机,绑定,消息处理
-     */
-    @Async
-    public void handleMessage() throws IOException, TimeoutException, InterruptedException {
-
-        // 原生代码 com.rabbitmq.client.ConnectionFactory
-        ConnectionFactory connectionFactory = new ConnectionFactory();
-        connectionFactory.setHost("129.28.198.9");
-        connectionFactory.setPort(5672);
-        connectionFactory.setUsername("wanli");
-        connectionFactory.setPassword("123456");
-
-        // Connection ,Channel 都实现 AutoCloseable接口,发生异常可自动关闭
-        try (Connection connection = connectionFactory.newConnection();
-
-             Channel channel = connection.createChannel()) {
-
-            /*-------restaurant----------*/
-            // 交换机由双方同时声明
-            channel.exchangeDeclare(
-                    "exchange.order.restaurant",
-                    BuiltinExchangeType.DIRECT,
-                    true,
-                    false,
-                    null);
-
-            // 队列由接受方 声明并配置绑定关系
-            channel.queueDeclare(
-                    "queue.order",
-                    true,
-                    false,
-                    false,
-                    null);
-
-            // 绑定 交换机和队列 设置路由键
-            channel.queueBind(
-                    "queue.order",
-                    "exchange.order.restaurant",
-                    "key.order");
-
-            /*-------deliveryman----------*/
-            // 交换机由双方同时声明
-            channel.exchangeDeclare(
-                    "exchange.order.deliveryman",
-                    BuiltinExchangeType.DIRECT,
-                    true,
-                    false,
-                    null);
-
-            channel.queueBind(
-                    "queue.order",
-                    "exchange.order.deliveryman",
-                    "key.order"
-            );
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
 
 
-            /*-------settlement----------*/
-            // 交换机由双方同时声明
-            // 因为Exchange 为fanout routing key没有作用  则声明两个虚拟机 对应不同的微服务
-            channel.exchangeDeclare(
-                    "exchange.order.settlement", // 订单模块 发送消息给 结算微服务
-                    BuiltinExchangeType.FANOUT,
-                    true,
-                    false,
-                    null);
-
-            channel.exchangeDeclare(
-                    "exchange.settlement.order", //订单模块接收 结算微服务消息
-                    BuiltinExchangeType.FANOUT,
-                    true,
-                    false,
-                    null);
-
-            // 绑定
-            channel.queueBind(
-                    "queue.order",
-                    "exchange.settlement.order",
-                    "key.order"
-            );
-
-            /*-------reward----------*/
-            // 交换机由双方同时声明
-            channel.exchangeDeclare(
-                    "exchange.order.reward",
-                    BuiltinExchangeType.TOPIC,
-                    true,
-                    false,
-                    null);
-
-            channel.queueBind(
-                    "queue.order",
-                    "exchange.order.reward",
-                    "key.order"
-            );
+//    public void handlerMessage2(@Payload Message message, Channel channel) {
+//        log.info("还没有ack");
+//        // 手动ack
+//        try {
+//            channel.basicAck(message.getMessageProperties().getDeliveryTag(), false);
+//        } catch (IOException e) {
+//            e.printStackTrace();
+//        }
+//        log.info("自定义方法处理业务逻辑 messageBody:{}", new String(message.getBody()));
+//    }
 
 
-            // 消息消费
-            channel.basicConsume(
-                    "queue.order",
-                    true,
-                    deliverCallback,
-                    consumerTag -> {  //消费者标签 暂时为空
-                    });
-            log.info("收到其他微服务的消息");
+    @RabbitListener(
+            bindings = {
+                    @QueueBinding(
+                            value = @Queue(
+                                    name = "queue.order",
+                                    arguments = {
+//                                            @Argument(
+//                                                    name = "x-message-ttl",
+//                                                    value = "1000",
+//                                                    type = "java.lang.Integer"
+//                                            ),
+//                                            @Argument(
+//                                                    name = "x-dead-letter-exchange",
+//                                                    value = "exchange.dlx"
+//                                            )
+                                    }
+                            ),
+                            exchange = @Exchange(name = "exchange.order.restaurant"),
+                            key = "key.order"
+                    ),
+                    @QueueBinding(
+                            value = @Queue(
+                                    name = "queue.order"
+                            ),
+                            exchange = @Exchange(name = "exchange.order.deliverymen"),
+                            key = "key.order"
+                    ),
+                    @QueueBinding(
+                            value = @Queue(
+                                    name = "queue.order"
+                            ),
+                            exchange = @Exchange(name = "exchange.settlement.order", type = ExchangeTypes.FANOUT),
+                            key = "key.order"
+                    ),
+                    @QueueBinding(
+                            value = @Queue(
+                                    name = "queue.order"
+                            ),
+                            exchange = @Exchange(name = "exchange.order.reward", type = ExchangeTypes.TOPIC),
+                            key = "key.order"
+                    )
+            } )
 
-            // 该线程不会退出,随时监听队列消息
-            while (true) {
-                Thread.sleep(10000000);
-            }
-        }
-    }
+    public void handleMessage(@Payload Message message, Channel Channel, @Header(AmqpHeaders.DELIVERY_TAG) long tag) {
+        log.info("handleMessage.message:{}", new String(message.getBody()));
 
-    DeliverCallback deliverCallback = ((consumerTag, message) -> {
-        String messageBody = new String(message.getBody());
-
-
-        // 原生代码 com.rabbitmq.client.ConnectionFactory
-        ConnectionFactory connectionFactory = new ConnectionFactory();
-        connectionFactory.setHost("129.28.198.9");
-        connectionFactory.setPort(5672);
-        connectionFactory.setUsername("wanli");
-        connectionFactory.setPassword("123456");
-
+        long deliveryTag = message.getMessageProperties().getDeliveryTag();
         try {
-            // 将消息体反序列化成DTO
-            OrderMessageDTO orderMessageDTO = objectMapper.readValue(messageBody, OrderMessageDTO.class);
+            OrderMessageDTO orderMessageDTO = objectMapper.readValue(message.getBody(), OrderMessageDTO.class);
 
             // 数据库中读取订单
             OrderDetailPO orderDetailPO = orderDetailDao.selectOrder(orderMessageDTO.getOrderId());
@@ -170,18 +116,18 @@ public class OrderMessageService {
                         // 更新数据库 商家已确认
                         orderDetailDao.update(orderDetailPO);
 
-                        try (Connection connection = connectionFactory.newConnection();
-                             Channel channel = connection.createChannel()) {
 
-                            // 商家返回的消息 通过订单模块发送给骑士微服务
-                            String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
-                            channel.basicPublish(
-                                    "exchange.order.deliveryman",
-                                    "key.deliveryman",
-                                    null,
-                                    messageToSend.getBytes()
-                            );
-                        }
+                        // 商家返回的消息 通过订单模块发送给骑士微服务
+                        String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
+                        long deliveryTag1 = message.getMessageProperties().getDeliveryTag();
+                        Channel.basicAck(tag,false);
+
+                        rabbitTemplate.convertAndSend(
+                                "exchange.order.deliveryman",
+                                "key.deliveryman",
+                                messageToSend
+                        );
+
                     } else {
                         // 商家确认失败 ,订单失败
                         orderDetailPO.setStatus(OrderStatus.FAILED);
@@ -198,16 +144,15 @@ public class OrderMessageService {
                         orderDetailDao.update(orderDetailPO);
 
                         // 骑手确认OK后, 订单微服务向结算模块发送消息
-                        try (Connection connection = connectionFactory.newConnection();
-                             Channel channel = connection.createChannel()) {
-                            String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
-                            channel.basicPublish(
-                                    "exchange.order.settlement",
-                                    "key.settlement",
-                                    null,
-                                    messageToSend.getBytes()
-                            );
-                        }
+                        String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
+                        rabbitTemplate.convertAndSend(
+                                "exchange.order.settlement",
+                                "key.settlement",
+                                messageToSend
+                        );
+                        long deliveryTag1 = message.getMessageProperties().getDeliveryTag();
+
+                        Channel.basicAck(tag,false);
                     } else {
                         // 骑手微服务 处理失败,更新订单详情
                         orderDetailPO.setStatus(OrderStatus.FAILED);
@@ -222,16 +167,15 @@ public class OrderMessageService {
                         orderDetailDao.update(orderDetailPO);
 
                         // 订单向 积分微服务发送
-                        try (Connection connection = connectionFactory.newConnection();
-                             Channel channel = connection.createChannel()) {
-                            String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
-                         channel.basicPublish(
-                                 "exchange.order.reward",
-                                 "key.reward",
-                                 null,
-                                 messageToSend.getBytes()
-                         );
-                        }
+                        String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
+                        rabbitTemplate.convertAndSend(
+                                "exchange.order.reward",
+                                "key.reward",
+                                messageToSend
+                        );
+                        long deliveryTag1 = message.getMessageProperties().getDeliveryTag();
+
+                        Channel.basicAck(tag,false);
                     } else {
                         // 结算失败 导致订单失败
                         orderDetailPO.setStatus(OrderStatus.FAILED);
@@ -239,13 +183,13 @@ public class OrderMessageService {
                     }
                     break;
                 case SETTLEMENT_CONFIRMED:
-                    if (null != orderMessageDTO.getRewardId()){
+                    if (null != orderMessageDTO.getRewardId()) {
                         // 积分微服务返回消息  积分成功
                         // 订单结束  更新数据库
                         orderDetailPO.setStatus(OrderStatus.ORDER_CREATED);
                         orderDetailPO.setRewardId(orderMessageDTO.getRewardId());
                         orderDetailDao.update(orderDetailPO);
-                    } else{
+                    } else {
                         // 积分失败 导致订单失败
                         orderDetailPO.setStatus(OrderStatus.FAILED);
                         orderDetailDao.update(orderDetailPO);
@@ -258,8 +202,12 @@ public class OrderMessageService {
                 default:
                     throw new IllegalStateException("Unexpected value: " + orderDetailPO.getStatus());
             }
-        } catch (Exception e) {
+        } catch (
+                Exception e) {
             log.error(e.getMessage(), e);
         }
-    });
+
+    }
+
+
 }

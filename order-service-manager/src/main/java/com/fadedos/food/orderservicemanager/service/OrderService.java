@@ -1,24 +1,23 @@
 package com.fadedos.food.orderservicemanager.service;
 
-import java.io.IOException;
-import java.math.BigDecimal;
-
 import com.fadedos.food.orderservicemanager.dao.OrderDetailDao;
 import com.fadedos.food.orderservicemanager.dto.OrderMessageDTO;
 import com.fadedos.food.orderservicemanager.enummeration.OrderStatus;
-
-import java.util.Date;
-import java.util.concurrent.TimeoutException;
-
-
 import com.fadedos.food.orderservicemanager.po.OrderDetailPO;
 import com.fadedos.food.orderservicemanager.vo.OrderCreateVO;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.rabbitmq.client.*;
-import lombok.SneakyThrows;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.amqp.core.Message;
+import org.springframework.amqp.core.MessageProperties;
+import org.springframework.amqp.rabbit.annotation.RabbitHandler;
+import org.springframework.amqp.rabbit.connection.CorrelationData;
+import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+
+import java.io.IOException;
+import java.util.Date;
+import java.util.concurrent.TimeoutException;
 
 /**
  * @Description:处理用户关于订单的业务请求
@@ -32,7 +31,10 @@ public class OrderService {
     @Autowired
     private ObjectMapper objectMapper;
 
-    @SneakyThrows
+    @Autowired
+    private RabbitTemplate rabbitTemplate;
+
+
     public void createOrder(OrderCreateVO orderCreateVO) throws IOException, TimeoutException {
         // 创建订单
         OrderDetailPO orderDetailPO = new OrderDetailPO();
@@ -45,48 +47,44 @@ public class OrderService {
         // 订单持久化
         orderDetailDao.insert(orderDetailPO);
 
-        //消息体
+        // 消息体
         OrderMessageDTO orderMessageDTO = new OrderMessageDTO();
         orderMessageDTO.setOrderId(orderDetailPO.getId());
         orderMessageDTO.setProductId(orderDetailPO.getProductId());
         orderMessageDTO.setAccountId(orderDetailPO.getAccountId());
 
+        // 发送的消息
+        String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
+        MessageProperties messageProperties = new MessageProperties();
+        messageProperties.setExpiration("15000"); // 设置消息过期时间 消息属性
+        Message message = new Message(messageToSend.getBytes(), messageProperties);
 
-        // 原生代码 com.rabbitmq.client.ConnectionFactory
-        ConnectionFactory connectionFactory = new ConnectionFactory();
-        connectionFactory.setHost("129.28.198.9");
-        connectionFactory.setPort(5672);
-        connectionFactory.setUsername("wanli");
-        connectionFactory.setPassword("123456");
+        //发送端发送成功回调
+        rabbitTemplate.setConfirmCallback((correlationData, ack, cause) ->
+        {
+            log.info("correlationData:{},ack:{},cause:{}",
+                    correlationData, ack, cause);
+        });
 
-        // Connection ,Channel 都实现 AutoCloseable接口,发生异常可自动关闭
-        try (Connection connection = connectionFactory.newConnection();
+        // 路由失败回调
+        rabbitTemplate.setReturnsCallback(returned -> {
+            log.info("message:{},replyCode:{}",returned.getMessage(),returned.getReplyCode());
+        });
 
-             Channel channel = connection.createChannel()) {
+        CorrelationData correlationData = new CorrelationData();
+        // 设置消息的对应关系 设置订单id
+        correlationData.setId(orderDetailPO.getId().toString());
 
-            String messageToSend = objectMapper.writeValueAsString(orderMessageDTO);
-
-            // 开启发布者消息确认
-            channel.confirmSelect();
-
-            // 设置过期时间为15s  单位为ms
-            AMQP.BasicProperties properties = new AMQP.BasicProperties().builder().expiration("15000").build();
-
-            channel.basicPublish(
-                    "exchange.order.restaurant",
-                    "key.restaurant", // 此路由key是在 餐厅微服务模块中声明
-                    null, //设置消息属性 此处是单条消息过期时间
-                    messageToSend.getBytes()
-            );
-            log.info("message sent");
+        // String exchange, String routingKey, Message message
+        rabbitTemplate.send(
+                "exchange.order.restaurant",
+                "key.restaurant",
+                message,
+                correlationData
+        );
 
 
-            // 每发条消息 就确认一次
-            if (channel.waitForConfirms()) {
-                log.info("Rabbit MQ confirm success");
-            } else {
-                log.info("Rabbit MQ confirm failed");
-            }
-        }
+        log.info("message sent");
+
     }
 }
